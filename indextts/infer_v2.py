@@ -324,11 +324,29 @@ class IndexTTS2:
             self.gr_progress(value, desc=desc)
 
     def _load_and_cut_audio(self,audio_path,max_audio_length_seconds,verbose=False,sr=None):
-        if not sr:
-            audio, sr = librosa.load(audio_path)
-        else:
-            audio, _ = librosa.load(audio_path,sr=sr)
-        audio = torch.tensor(audio).unsqueeze(0)
+        try:
+            # Try librosa first
+            if not sr:
+                audio, sr = librosa.load(audio_path)
+            else:
+                audio, _ = librosa.load(audio_path,sr=sr)
+            audio = torch.tensor(audio).unsqueeze(0)
+        except Exception as e:
+            # Fallback to torchaudio if librosa fails
+            if verbose:
+                print(f"Librosa failed to load audio ({e}), trying torchaudio...")
+            try:
+                waveform, orig_sr = torchaudio.load(audio_path)
+                if sr and orig_sr != sr:
+                    resampler = torchaudio.transforms.Resample(orig_sr, sr)
+                    audio = resampler(waveform)
+                else:
+                    audio = waveform
+                    if not sr:
+                        sr = orig_sr
+            except Exception as e2:
+                raise RuntimeError(f"Failed to load audio file '{audio_path}': {e2}. Please ensure ffmpeg is installed and the audio file is valid.") from e2
+        
         max_audio_samples = int(max_audio_length_seconds * sr)
 
         if audio.shape[1] > max_audio_samples:
