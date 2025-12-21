@@ -32,7 +32,33 @@ import transformers
 
 from indextts.gpt.transformers_generation_utils import GenerationMixin
 from indextts.gpt.transformers_modeling_utils import PreTrainedModel
-from transformers.modeling_utils import SequenceSummary
+
+# SequenceSummary may be in different locations depending on transformers version
+try:
+    from transformers.modeling_utils import SequenceSummary
+except ImportError:
+    try:
+        from transformers.models.gpt2.modeling_gpt2 import SequenceSummary
+    except ImportError:
+        # Define a simple fallback SequenceSummary if not available
+        class SequenceSummary(nn.Module):
+            def __init__(self, config):
+                super().__init__()
+                self.summary_type = getattr(config, "summary_type", "last")
+                self.summary = nn.Identity()
+                if hasattr(config, "summary_hidden_size") and config.summary_hidden_size > 0:
+                    self.summary = nn.Linear(config.hidden_size, config.summary_hidden_size)
+            
+            def forward(self, hidden_states, cls_index=None):
+                if self.summary_type == "last":
+                    output = hidden_states[:, -1]
+                elif self.summary_type == "first":
+                    output = hidden_states[:, 0]
+                elif self.summary_type == "mean":
+                    output = hidden_states.mean(dim=1)
+                else:
+                    output = hidden_states[:, -1]
+                return self.summary(output)
 
 from transformers.modeling_attn_mask_utils import _prepare_4d_attention_mask_for_sdpa, _prepare_4d_causal_attention_mask_for_sdpa
 from transformers.modeling_outputs import (

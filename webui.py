@@ -108,37 +108,39 @@ EMO_CHOICES_ALL = [i18n("与音色参考音频相同"),
                 i18n("使用情感描述文本控制")]
 EMO_CHOICES_OFFICIAL = EMO_CHOICES_ALL[:-1]  # skip experimental features
 
-os.makedirs("outputs/tasks",exist_ok=True)
-os.makedirs("prompts",exist_ok=True)
+os.makedirs(os.path.join(current_dir, "outputs/tasks"), exist_ok=True)
+os.makedirs(os.path.join(current_dir, "prompts"), exist_ok=True)
 
 MAX_LENGTH_TO_USE_SPEED = 70
 example_cases = []
-with open("examples/cases.jsonl", "r", encoding="utf-8") as f:
-    for line in f:
-        line = line.strip()
-        if not line:
-            continue
-        example = json.loads(line)
-        if example.get("emo_audio",None):
-            emo_audio_path = os.path.join("examples",example["emo_audio"])
-        else:
-            emo_audio_path = None
+examples_file = os.path.join(current_dir, "examples/cases.jsonl")
+if os.path.exists(examples_file):
+    with open(examples_file, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            example = json.loads(line)
+            if example.get("emo_audio",None):
+                emo_audio_path = os.path.join(current_dir, "examples", example["emo_audio"])
+            else:
+                emo_audio_path = None
 
-        example_cases.append([os.path.join("examples", example.get("prompt_audio", "sample_prompt.wav")),
-                              EMO_CHOICES_ALL[example.get("emo_mode",0)],
-                              example.get("text"),
-                             emo_audio_path,
-                             example.get("emo_weight",1.0),
-                             example.get("emo_text",""),
-                             example.get("emo_vec_1",0),
-                             example.get("emo_vec_2",0),
-                             example.get("emo_vec_3",0),
-                             example.get("emo_vec_4",0),
-                             example.get("emo_vec_5",0),
-                             example.get("emo_vec_6",0),
-                             example.get("emo_vec_7",0),
-                             example.get("emo_vec_8",0),
-                             ])
+            example_cases.append([os.path.join(current_dir, "examples", example.get("prompt_audio", "sample_prompt.wav")),
+                                  EMO_CHOICES_ALL[example.get("emo_mode",0)],
+                                  example.get("text"),
+                                 emo_audio_path,
+                                 example.get("emo_weight",1.0),
+                                 example.get("emo_text",""),
+                                 example.get("emo_vec_1",0),
+                                 example.get("emo_vec_2",0),
+                                 example.get("emo_vec_3",0),
+                                 example.get("emo_vec_4",0),
+                                 example.get("emo_vec_5",0),
+                                 example.get("emo_vec_6",0),
+                                 example.get("emo_vec_7",0),
+                                 example.get("emo_vec_8",0),
+                                 ])
 
 def get_example_cases(include_experimental = False):
     if include_experimental:
@@ -170,7 +172,7 @@ def gen_single(emo_control_method,prompt, text,
                 *args, progress=gr.Progress()):
     output_path = None
     if not output_path:
-        output_path = os.path.join("outputs", f"spk_{int(time.time())}.wav")
+        output_path = os.path.join(current_dir, "outputs", f"spk_{int(time.time())}.wav")
     # set gradio progress
     tts.gr_progress = progress
     do_sample, top_p, top_k, temperature, \
@@ -236,10 +238,10 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
 
     with gr.Tab(i18n("音频生成")):
         with gr.Row():
-            os.makedirs("prompts",exist_ok=True)
+            os.makedirs(os.path.join(current_dir, "prompts"), exist_ok=True)
             prompt_audio = gr.Audio(label=i18n("音色参考音频"),key="prompt_audio",
                                     sources=["upload","microphone"],type="filepath")
-            prompt_list = os.listdir("prompts")
+            prompt_list = os.listdir(os.path.join(current_dir, "prompts"))
             default = ''
             if prompt_list:
                 default = prompt_list[0]
