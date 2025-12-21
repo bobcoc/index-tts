@@ -30,9 +30,13 @@ from transformers.cache_utils import (
     DynamicCache,
     EncoderDecoderCache,
     OffloadedCache,
-    QuantizedCacheConfig,
     StaticCache,
 )
+# QuantizedCacheConfig may not exist in older transformers versions
+try:
+    from transformers.cache_utils import QuantizedCacheConfig
+except ImportError:
+    QuantizedCacheConfig = None
 from transformers.configuration_utils import PretrainedConfig
 from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
 from transformers.integrations.fsdp import is_fsdp_managed_module
