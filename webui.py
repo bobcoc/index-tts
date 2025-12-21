@@ -4,6 +4,9 @@ import os
 import sys
 import threading
 import time
+import tempfile
+import shutil
+import subprocess
 
 import warnings
 
@@ -29,6 +32,7 @@ parser.add_argument("--fp16", action="store_true", default=False, help="Use FP16
 parser.add_argument("--deepspeed", action="store_true", default=False, help="Use DeepSpeed to accelerate if available")
 parser.add_argument("--cuda_kernel", action="store_true", default=False, help="Use CUDA kernel for inference if available")
 parser.add_argument("--gui_seg_tokens", type=int, default=120, help="GUI: Max tokens per generation segment")
+parser.add_argument("--wav2lip_dir", type=str, default=None, help="Path to Wav2Lip repository for video dubbing")
 cmd_args = parser.parse_args()
 
 if not os.path.exists(cmd_args.model_dir):
@@ -59,6 +63,23 @@ tts = IndexTTS2(model_dir=cmd_args.model_dir,
                 use_deepspeed=cmd_args.deepspeed,
                 use_cuda_kernel=cmd_args.cuda_kernel,
                 )
+
+# Video dubbing support
+VIDEO_DUB_ENABLED = False
+wav2lip_engine = None
+if cmd_args.wav2lip_dir and os.path.exists(cmd_args.wav2lip_dir):
+    try:
+        from tools.video_dub import extract_audio_from_video, align_audio_duration, get_audio_duration, Wav2LipEngine, check_ffmpeg
+        check_ffmpeg()
+        wav2lip_engine = Wav2LipEngine(cmd_args.wav2lip_dir)
+        if wav2lip_engine.check_requirements():
+            VIDEO_DUB_ENABLED = True
+            print(f">> Video dubbing enabled with Wav2Lip at: {cmd_args.wav2lip_dir}")
+        else:
+            print(f"WARNING: Wav2Lip requirements not met. Video dubbing will be disabled.")
+    except Exception as e:
+        print(f"WARNING: Failed to initialize video dubbing: {e}")
+
 # 支持的语言列表
 LANGUAGES = {
     "中文": "zh_CN",
@@ -550,6 +571,204 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                      ],
                      outputs=[output_audio])
 
+    # =========================================================================
+    # Video Dubbing Tab
+    # =========================================================================
+    with gr.Tab(i18n("视频配音"), visible=VIDEO_DUB_ENABLED):
+        if not VIDEO_DUB_ENABLED:
+            gr.Markdown(f"""
+            ### {i18n("视频配音功能未启用")}
+            
+            {i18n("请使用以下参数启动 WebUI 以启用视频配音功能")}：
+            
+            ```
+            python webui.py --wav2lip_dir /path/to/Wav2Lip
+            ```
+            """)
+        else:
+            gr.Markdown(f"""
+            ### {i18n("视频配音 + 口型同步")}
+            {i18n("上传视频和配音文本，自动生成口型同步的新视频")}
+            """)
+            
+            with gr.Row():
+                with gr.Column(scale=1):
+                    video_input = gr.Video(
+                        label=i18n("输入视频"),
+                        sources=["upload"],
+                    )
+                    video_spk_audio = gr.Audio(
+                        label=i18n("音色参考音频（可选）"),
+                        sources=["upload", "microphone"],
+                        type="filepath",
+                    )
+                    gr.Markdown(i18n("不提供则自动从视频中提取"))
+                
+                with gr.Column(scale=1):
+                    video_script = gr.TextArea(
+                        label=i18n("配音文本"),
+                        placeholder=i18n("请输入配音脚本"),
+                        lines=6
+                    )
+                    video_gen_button = gr.Button(i18n("生成视频"), variant="primary")
+            
+            with gr.Accordion(i18n("高级设置"), open=False):
+                with gr.Row():
+                    video_align_duration = gr.Checkbox(
+                        label=i18n("对齐原视频时长"),
+                        value=True,
+                    )
+                    video_spk_extract_start = gr.Number(
+                        label=i18n("参考音频提取起始时间(秒)"),
+                        value=0.0,
+                        minimum=0.0,
+                    )
+                    video_spk_extract_duration = gr.Number(
+                        label=i18n("参考音频提取时长(秒)"),
+                        value=10.0,
+                        minimum=1.0,
+                        maximum=30.0,
+                    )
+                
+                with gr.Row():
+                    video_emo_control = gr.Radio(
+                        choices=[i18n("与音色参考音频相同"), i18n("根据文本推断情感")],
+                        value=i18n("与音色参考音频相同"),
+                        label=i18n("情感控制")
+                    )
+                    video_emo_alpha = gr.Slider(
+                        label=i18n("情感强度"),
+                        minimum=0.0,
+                        maximum=1.0,
+                        value=0.8,
+                        step=0.05,
+                        visible=False
+                    )
+            
+            with gr.Row():
+                video_output = gr.Video(label=i18n("生成结果"))
+            
+            video_status = gr.Markdown("")
+            
+            def on_video_emo_control_change(emo_control):
+                if emo_control == i18n("根据文本推断情感"):
+                    return gr.update(visible=True)
+                return gr.update(visible=False)
+            
+            video_emo_control.change(
+                on_video_emo_control_change,
+                inputs=[video_emo_control],
+                outputs=[video_emo_alpha]
+            )
+            
+            def generate_dubbed_video(
+                video_path,
+                script_text,
+                spk_audio,
+                align_duration,
+                spk_extract_start,
+                spk_extract_duration,
+                emo_control,
+                emo_alpha,
+                progress=gr.Progress()
+            ):
+                if not video_path:
+                    gr.Warning(i18n("请上传视频文件"))
+                    return None, ""
+                
+                if not script_text or not script_text.strip():
+                    gr.Warning(i18n("请输入配音文本"))
+                    return None, ""
+                
+                temp_dir = tempfile.mkdtemp(prefix="video_dub_webui_")
+                
+                try:
+                    progress(0.1, desc=i18n("提取参考音频..."))
+                    
+                    # Step 1: Extract reference audio
+                    if spk_audio is None:
+                        spk_audio_path = os.path.join(temp_dir, "spk_prompt.wav")
+                        extract_audio_from_video(
+                            video_path,
+                            spk_audio_path,
+                            sample_rate=24000,
+                            start_time=float(spk_extract_start),
+                            duration=float(spk_extract_duration),
+                            verbose=cmd_args.verbose
+                        )
+                    else:
+                        spk_audio_path = spk_audio
+                    
+                    # Get original audio duration for alignment
+                    orig_audio_path = os.path.join(temp_dir, "orig_audio.wav")
+                    extract_audio_from_video(video_path, orig_audio_path, verbose=False)
+                    orig_duration = get_audio_duration(orig_audio_path)
+                    
+                    progress(0.3, desc=i18n("生成配音..."))
+                    
+                    # Step 2: Generate TTS audio
+                    tts_audio_raw = os.path.join(temp_dir, "tts_audio_raw.wav")
+                    
+                    use_emo_text = (emo_control == i18n("根据文本推断情感"))
+                    
+                    tts.infer(
+                        spk_audio_prompt=spk_audio_path,
+                        text=script_text.strip(),
+                        output_path=tts_audio_raw,
+                        emo_alpha=float(emo_alpha) if use_emo_text else 1.0,
+                        use_emo_text=use_emo_text,
+                        verbose=cmd_args.verbose
+                    )
+                    
+                    # Optional: Align duration
+                    if align_duration:
+                        progress(0.5, desc=i18n("对齐音频时长..."))
+                        tts_audio = os.path.join(temp_dir, "tts_audio.wav")
+                        align_audio_duration(tts_audio_raw, orig_duration, tts_audio, verbose=cmd_args.verbose)
+                    else:
+                        tts_audio = tts_audio_raw
+                    
+                    progress(0.6, desc=i18n("生成口型同步视频..."))
+                    
+                    # Step 3: Generate lip-synced video
+                    output_path = os.path.join("outputs", f"video_dub_{int(time.time())}.mp4")
+                    
+                    wav2lip_engine.generate(
+                        video_path=video_path,
+                        audio_path=tts_audio,
+                        output_path=output_path,
+                        verbose=cmd_args.verbose
+                    )
+                    
+                    progress(1.0, desc=i18n("完成"))
+                    
+                    return output_path, f"✅ {i18n('视频生成成功')}: {output_path}"
+                    
+                except Exception as e:
+                    import traceback
+                    error_msg = f"❌ {i18n('生成失败')}: {str(e)}"
+                    print(f"Video dubbing error: {e}")
+                    traceback.print_exc()
+                    return None, error_msg
+                    
+                finally:
+                    # Cleanup temp files
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+            
+            video_gen_button.click(
+                generate_dubbed_video,
+                inputs=[
+                    video_input,
+                    video_script,
+                    video_spk_audio,
+                    video_align_duration,
+                    video_spk_extract_start,
+                    video_spk_extract_duration,
+                    video_emo_control,
+                    video_emo_alpha
+                ],
+                outputs=[video_output, video_status]
+            )
 
 
 if __name__ == "__main__":
