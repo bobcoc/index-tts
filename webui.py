@@ -33,6 +33,7 @@ parser.add_argument("--deepspeed", action="store_true", default=False, help="Use
 parser.add_argument("--cuda_kernel", action="store_true", default=False, help="Use CUDA kernel for inference if available")
 parser.add_argument("--gui_seg_tokens", type=int, default=120, help="GUI: Max tokens per generation segment")
 parser.add_argument("--wav2lip_dir", type=str, default=None, help="Path to Wav2Lip repository for video dubbing")
+parser.add_argument("--wav2lip_python", type=str, default=None, help="Python executable for Wav2Lip environment (e.g., /home/lsm/miniconda3/envs/wav2lip/bin/python)")
 cmd_args = parser.parse_args()
 
 if not os.path.exists(cmd_args.model_dir):
@@ -71,10 +72,26 @@ if cmd_args.wav2lip_dir and os.path.exists(cmd_args.wav2lip_dir):
     try:
         from tools.video_dub import extract_audio_from_video, align_audio_duration, get_audio_duration, Wav2LipEngine, check_ffmpeg
         check_ffmpeg()
-        wav2lip_engine = Wav2LipEngine(cmd_args.wav2lip_dir)
+        # Use specified Python executable for Wav2Lip, or auto-detect from wav2lip conda env
+        wav2lip_python = cmd_args.wav2lip_python
+        if wav2lip_python is None:
+            # Try to auto-detect wav2lip conda environment
+            possible_paths = [
+                os.path.expanduser("~/miniconda3/envs/wav2lip/bin/python"),
+                os.path.expanduser("~/anaconda3/envs/wav2lip/bin/python"),
+                os.path.join(cmd_args.wav2lip_dir, "venv/bin/python"),
+            ]
+            for path in possible_paths:
+                if os.path.exists(path):
+                    wav2lip_python = path
+                    print(f">> Auto-detected Wav2Lip Python: {wav2lip_python}")
+                    break
+        wav2lip_engine = Wav2LipEngine(cmd_args.wav2lip_dir, python_executable=wav2lip_python)
         if wav2lip_engine.check_requirements():
             VIDEO_DUB_ENABLED = True
             print(f">> Video dubbing enabled with Wav2Lip at: {cmd_args.wav2lip_dir}")
+            if wav2lip_python:
+                print(f">> Using Wav2Lip Python: {wav2lip_python}")
         else:
             print(f"WARNING: Wav2Lip requirements not met. Video dubbing will be disabled.")
     except Exception as e:
