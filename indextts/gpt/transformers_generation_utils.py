@@ -127,14 +127,22 @@ from transformers.generation.logits_process import (
     UnbatchedClassifierFreeGuidanceLogitsProcessor,
 )
 from transformers.generation.stopping_criteria import (
-    ConfidenceCriteria,
     EosTokenCriteria,
     MaxLengthCriteria,
     MaxTimeCriteria,
     StoppingCriteria,
     StoppingCriteriaList,
-    StopStringCriteria,
 )
+# Handle optional stopping criteria imports
+try:
+    from transformers.generation.stopping_criteria import ConfidenceCriteria
+except ImportError:
+    ConfidenceCriteria = None
+
+try:
+    from transformers.generation.stopping_criteria import StopStringCriteria
+except ImportError:
+    StopStringCriteria = None
 
 
 if TYPE_CHECKING:
