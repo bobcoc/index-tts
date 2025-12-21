@@ -699,7 +699,12 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                     gr.Warning(i18n("请输入配音文本"))
                     return None, ""
                 
-                temp_dir = tempfile.mkdtemp(prefix="video_dub_webui_")
+                # Use persistent temp dir for debugging (not /tmp)
+                temp_base = os.path.join(current_dir, "outputs", "video_dub_temp")
+                os.makedirs(temp_base, exist_ok=True)
+                temp_dir = os.path.join(temp_base, f"session_{int(time.time())}")
+                os.makedirs(temp_dir, exist_ok=True)
+                print(f">> Temp dir: {temp_dir}")
                 
                 try:
                     progress(0.1, desc=i18n("提取参考音频..."))
@@ -750,7 +755,7 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                     progress(0.6, desc=i18n("生成口型同步视频..."))
                     
                     # Step 3: Generate lip-synced video
-                    output_path = os.path.join("outputs", f"video_dub_{int(time.time())}.mp4")
+                    output_path = os.path.join(current_dir, "outputs", f"video_dub_{int(time.time())}.mp4")
                     
                     wav2lip_engine.generate(
                         video_path=video_path,
@@ -771,8 +776,9 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                     return None, error_msg
                     
                 finally:
-                    # Cleanup temp files
-                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    # Keep temp files for debugging on error
+                    # To clean up manually: rm -rf outputs/video_dub_temp/
+                    pass
             
             video_gen_button.click(
                 generate_dubbed_video,
