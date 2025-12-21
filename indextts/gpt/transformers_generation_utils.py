@@ -54,21 +54,50 @@ from transformers.utils import (
 )
 from transformers.generation.beam_constraints import DisjunctiveConstraint, PhrasalConstraint
 from transformers.generation.beam_search import BeamScorer, BeamSearchScorer, ConstrainedBeamSearchScorer
-from transformers.generation.candidate_generator import (
-    AssistedCandidateGenerator,
-    AssistedCandidateGeneratorDifferentTokenizers,
-    CandidateGenerator,
-    PromptLookupCandidateGenerator,
-    _crop_past_key_values,
-    _prepare_attention_mask,
-    _prepare_token_type_ids,
-)
+
+# Handle optional imports that may not exist in all transformers versions
+try:
+    from transformers.generation.candidate_generator import (
+        AssistedCandidateGenerator,
+        AssistedCandidateGeneratorDifferentTokenizers,
+        CandidateGenerator,
+        PromptLookupCandidateGenerator,
+    )
+except ImportError:
+    AssistedCandidateGenerator = None
+    AssistedCandidateGeneratorDifferentTokenizers = None
+    CandidateGenerator = None
+    PromptLookupCandidateGenerator = None
+
+try:
+    from transformers.generation.candidate_generator import _crop_past_key_values
+except ImportError:
+    _crop_past_key_values = None
+
+try:
+    from transformers.generation.candidate_generator import _prepare_attention_mask
+except ImportError:
+    _prepare_attention_mask = None
+
+try:
+    from transformers.generation.candidate_generator import _prepare_token_type_ids
+except ImportError:
+    _prepare_token_type_ids = None
+
 from transformers.generation.configuration_utils import (
-    NEED_SETUP_CACHE_CLASSES_MAPPING,
-    QUANT_BACKEND_CLASSES_MAPPING,
     GenerationConfig,
     GenerationMode,
 )
+# Handle optional configuration imports
+try:
+    from transformers.generation.configuration_utils import NEED_SETUP_CACHE_CLASSES_MAPPING
+except ImportError:
+    NEED_SETUP_CACHE_CLASSES_MAPPING = {}
+
+try:
+    from transformers.generation.configuration_utils import QUANT_BACKEND_CLASSES_MAPPING
+except ImportError:
+    QUANT_BACKEND_CLASSES_MAPPING = {}
 from transformers.generation.logits_process import (
     EncoderNoRepeatNGramLogitsProcessor,
     EncoderRepetitionPenaltyLogitsProcessor,
