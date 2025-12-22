@@ -803,7 +803,8 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                     if align_duration:
                         progress(0.5, desc=i18n("对齐音频时长..."))
                         tts_audio = os.path.join(temp_dir, "tts_audio.wav")
-                        align_audio_duration(tts_audio_raw, orig_duration, tts_audio, verbose=cmd_args.verbose)
+                        align_audio_duration(tts_audio_raw, orig_duration, tts_audio, 
+                                           orig_audio_path=orig_audio_path, verbose=cmd_args.verbose)
                     else:
                         tts_audio = tts_audio_raw
                     

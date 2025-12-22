@@ -360,7 +360,7 @@ class LatentSyncEngine(LipSyncEngine):
         self,
         latentsync_dir: str,
         checkpoint: str = "checkpoints/latentsync_unet.pt",
-        config: str = "configs/unet/stage2.yaml",
+        config: str = "auto",  # auto, stage2, stage2_512, stage2_efficient
         python_executable: Optional[str] = None
     ):
         """
@@ -369,13 +369,27 @@ class LatentSyncEngine(LipSyncEngine):
         Args:
             latentsync_dir: Path to LatentSync repository
             checkpoint: Path to UNet checkpoint (relative to latentsync_dir)
-            config: Path to UNet config (relative to latentsync_dir)
+            config: Config to use: 'auto' (detect from model), 'stage2' (256px), 
+                   'stage2_512' (512px), 'stage2_efficient' (256px, lower VRAM)
             python_executable: Python executable to use (default: sys.executable)
         """
         self.latentsync_dir = Path(latentsync_dir)
         self.checkpoint = checkpoint
-        self.config = config
         self.python_executable = python_executable or sys.executable
+        
+        # Auto-detect config based on checkpoint or use default
+        if config == "auto":
+            # LatentSync 1.6 uses 512x512, earlier versions use 256x256
+            # Check if stage2_512.yaml should be used (for 1.6)
+            # Default to stage2_512 for better quality (LatentSync 1.6)
+            config_512 = self.latentsync_dir / "configs/unet/stage2_512.yaml"
+            if config_512.exists():
+                self.config = "configs/unet/stage2_512.yaml"
+                print(f">> Using LatentSync 512x512 config (1.6)")
+            else:
+                self.config = "configs/unet/stage2.yaml"
+        else:
+            self.config = f"configs/unet/{config}.yaml"
     
     def check_requirements(self) -> bool:
         """Check if LatentSync is properly set up."""
@@ -490,15 +504,21 @@ def align_audio_duration(
     audio_path: str,
     target_duration: float,
     output_path: str,
+    orig_audio_path: Optional[str] = None,
     verbose: bool = True
 ) -> str:
     """
-    Adjust audio duration to match target duration using ffmpeg atempo.
+    Adjust audio duration to match target duration.
+    
+    - If audio is shorter: pad with original audio (if provided) or silence
+    - If audio is much longer: truncate to target duration
+    - If difference is small: use ffmpeg atempo to adjust speed
     
     Args:
-        audio_path: Path to input audio
-        target_duration: Target duration in seconds
+        audio_path: Path to input audio (TTS generated)
+        target_duration: Target duration in seconds (original video duration)
         output_path: Path to output audio
+        orig_audio_path: Path to original audio (for padding shorter audio)
         verbose: Print progress info
     
     Returns:
@@ -515,13 +535,87 @@ def align_audio_duration(
     # Calculate tempo factor
     tempo = current_duration / target_duration
     
-    # atempo only supports 0.5-2.0 range
-    if tempo < 0.5 or tempo > 2.0:
-        print(f"WARNING: Duration difference too large (tempo={tempo:.2f}), skipping alignment")
-        if audio_path != output_path:
-            shutil.copy(audio_path, output_path)
+    # Case 1: TTS audio is much shorter than video - pad with original audio
+    if tempo < 0.5:
+        if verbose:
+            print(f">> TTS audio too short ({current_duration:.2f}s vs {target_duration:.2f}s), padding with original audio")
+        
+        if orig_audio_path and os.path.exists(orig_audio_path):
+            # Mix: TTS audio at beginning + original audio for the rest
+            # Extract the remaining part from original audio
+            remaining_start = current_duration
+            remaining_duration = target_duration - current_duration
+            
+            # Create temp file for the remaining part
+            temp_remaining = output_path + ".remaining.wav"
+            cmd_extract = [
+                "ffmpeg", "-y",
+                "-i", orig_audio_path,
+                "-ss", str(remaining_start),
+                "-t", str(remaining_duration),
+                "-acodec", "pcm_s16le",
+                temp_remaining
+            ]
+            run_command(cmd_extract, "Extracting remaining original audio", verbose=False)
+            
+            # Concatenate TTS audio + remaining original audio
+            concat_list = output_path + ".concat.txt"
+            with open(concat_list, "w") as f:
+                f.write(f"file '{os.path.abspath(audio_path)}'\n")
+                f.write(f"file '{os.path.abspath(temp_remaining)}'\n")
+            
+            cmd_concat = [
+                "ffmpeg", "-y",
+                "-f", "concat",
+                "-safe", "0",
+                "-i", concat_list,
+                "-acodec", "pcm_s16le",
+                output_path
+            ]
+            run_command(cmd_concat, "Concatenating audio", verbose=False)
+            
+            # Cleanup temp files
+            os.remove(temp_remaining)
+            os.remove(concat_list)
+            
+            if verbose:
+                print(f"   Combined audio: TTS ({current_duration:.2f}s) + Original tail ({remaining_duration:.2f}s)")
+        else:
+            # No original audio, pad with silence
+            silence_duration = target_duration - current_duration
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", audio_path,
+                "-af", f"apad=whole_dur={target_duration}",
+                "-acodec", "pcm_s16le",
+                output_path
+            ]
+            run_command(cmd, "Padding audio with silence", verbose)
+            if verbose:
+                print(f"   Padded with {silence_duration:.2f}s silence")
+        
         return output_path
     
+    # Case 2: TTS audio is much longer than video - truncate
+    if tempo > 2.0:
+        if verbose:
+            print(f">> TTS audio too long ({current_duration:.2f}s vs {target_duration:.2f}s), truncating")
+        
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", audio_path,
+            "-t", str(target_duration),
+            "-acodec", "pcm_s16le",
+            output_path
+        ]
+        run_command(cmd, "Truncating audio", verbose=False)
+        
+        if verbose:
+            print(f"   Truncated to {target_duration:.2f}s")
+        
+        return output_path
+    
+    # Case 3: Moderate difference - use atempo to adjust speed
     if verbose:
         print(f">> Aligning audio duration: {current_duration:.2f}s -> {target_duration:.2f}s (tempo={tempo:.2f})")
     
@@ -631,7 +725,8 @@ def dub_video(
         # Optional: Align duration
         if align_duration:
             tts_audio = os.path.join(temp_dir, "tts_audio.wav")
-            align_audio_duration(tts_audio_raw, orig_duration, tts_audio, verbose)
+            align_audio_duration(tts_audio_raw, orig_duration, tts_audio, 
+                               orig_audio_path=orig_audio_path, verbose=verbose)
         else:
             tts_audio = tts_audio_raw
         
