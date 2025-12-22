@@ -345,21 +345,62 @@ class Wav2LipEngine(LipSyncEngine):
 
 class LatentSyncEngine(LipSyncEngine):
     """
-    LatentSync lip sync engine (placeholder for future implementation).
+    LatentSync lip sync engine - High quality lip sync using latent diffusion.
     
-    This will provide higher quality lip sync using latent diffusion,
-    requiring more GPU resources but producing better results.
+    Based on ByteDance's LatentSync:
+    https://github.com/bytedance/LatentSync
+    
+    Requirements:
+    - Minimum 8GB VRAM (LatentSync 1.5) or 18GB VRAM (LatentSync 1.6)
+    - checkpoints/latentsync_unet.pt
+    - checkpoints/whisper/tiny.pt
     """
     
-    def __init__(self, latentsync_dir: str, **kwargs):
+    def __init__(
+        self,
+        latentsync_dir: str,
+        checkpoint: str = "checkpoints/latentsync_unet.pt",
+        config: str = "configs/unet/stage2.yaml",
+        python_executable: Optional[str] = None
+    ):
+        """
+        Initialize LatentSync engine.
+        
+        Args:
+            latentsync_dir: Path to LatentSync repository
+            checkpoint: Path to UNet checkpoint (relative to latentsync_dir)
+            config: Path to UNet config (relative to latentsync_dir)
+            python_executable: Python executable to use (default: sys.executable)
+        """
         self.latentsync_dir = Path(latentsync_dir)
-        # TODO: Add LatentSync-specific configuration
+        self.checkpoint = checkpoint
+        self.config = config
+        self.python_executable = python_executable or sys.executable
     
     def check_requirements(self) -> bool:
-        # TODO: Implement LatentSync requirements check
-        print("WARNING: LatentSync engine is not yet implemented.")
-        print("Please use Wav2Lip for now, or contribute the implementation!")
-        return False
+        """Check if LatentSync is properly set up."""
+        scripts_dir = self.latentsync_dir / "scripts"
+        checkpoint_path = self.latentsync_dir / self.checkpoint
+        config_path = self.latentsync_dir / self.config
+        
+        if not scripts_dir.exists():
+            print(f"ERROR: LatentSync scripts not found at {scripts_dir}")
+            print("Please clone LatentSync repository:")
+            print("  git clone https://github.com/bytedance/LatentSync.git")
+            return False
+        
+        if not checkpoint_path.exists():
+            print(f"ERROR: LatentSync checkpoint not found at {checkpoint_path}")
+            print("Please download the checkpoint:")
+            print("  cd LatentSync && source setup_env.sh")
+            print("  Or download manually from: https://huggingface.co/ByteDance/LatentSync-1.6")
+            return False
+        
+        if not config_path.exists():
+            print(f"ERROR: LatentSync config not found at {config_path}")
+            return False
+        
+        return True
     
     def generate(
         self,
@@ -367,13 +408,78 @@ class LatentSyncEngine(LipSyncEngine):
         audio_path: str,
         output_path: str,
         verbose: bool = True,
+        inference_steps: int = 20,
+        guidance_scale: float = 1.5,
+        seed: int = 0,
+        enable_deepcache: bool = True,
         **kwargs
     ) -> str:
-        # TODO: Implement LatentSync inference
-        raise NotImplementedError(
-            "LatentSync engine is not yet implemented. "
-            "Please use Wav2Lip for now."
+        """
+        Generate lip-synced video using LatentSync.
+        
+        Args:
+            video_path: Path to input video
+            audio_path: Path to audio file
+            output_path: Path to output video
+            verbose: Print progress info
+            inference_steps: Number of diffusion steps (20-50, higher = better quality but slower)
+            guidance_scale: CFG scale (1.0-3.0, higher = better lip sync but may cause distortion)
+            seed: Random seed (0 for random)
+            enable_deepcache: Use DeepCache for faster inference
+        
+        Returns:
+            Path to output video
+        """
+        if not self.check_requirements():
+            raise RuntimeError("LatentSync requirements not met")
+        
+        cmd = [
+            self.python_executable,
+            "-m", "scripts.inference",
+            "--unet_config_path", str(self.latentsync_dir / self.config),
+            "--inference_ckpt_path", str(self.latentsync_dir / self.checkpoint),
+            "--inference_steps", str(inference_steps),
+            "--guidance_scale", str(guidance_scale),
+            "--video_path", video_path,
+            "--audio_path", audio_path,
+            "--video_out_path", output_path,
+        ]
+        
+        if seed > 0:
+            cmd.extend(["--seed", str(seed)])
+        
+        if enable_deepcache:
+            cmd.append("--enable_deepcache")
+        
+        # Run LatentSync inference
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(self.latentsync_dir)
+        
+        if verbose:
+            print(f">> Generating lip-synced video with LatentSync...")
+            print(f"   Video: {video_path}")
+            print(f"   Audio: {audio_path}")
+            print(f"   Output: {output_path}")
+            print(f"   Steps: {inference_steps}, Guidance: {guidance_scale}")
+        
+        result = subprocess.run(
+            cmd,
+            cwd=str(self.latentsync_dir),
+            env=env,
+            capture_output=True,
+            text=True
         )
+        
+        if result.returncode != 0:
+            print(f"ERROR: LatentSync failed!")
+            print(f"STDOUT: {result.stdout}")
+            print(f"STDERR: {result.stderr}")
+            raise RuntimeError("LatentSync inference failed")
+        
+        if verbose:
+            print(f"   Lip-synced video saved to: {output_path}")
+        
+        return output_path
 
 
 # =============================================================================

@@ -33,7 +33,10 @@ parser.add_argument("--deepspeed", action="store_true", default=False, help="Use
 parser.add_argument("--cuda_kernel", action="store_true", default=False, help="Use CUDA kernel for inference if available")
 parser.add_argument("--gui_seg_tokens", type=int, default=120, help="GUI: Max tokens per generation segment")
 parser.add_argument("--wav2lip_dir", type=str, default=None, help="Path to Wav2Lip repository for video dubbing")
-parser.add_argument("--wav2lip_python", type=str, default=None, help="Python executable for Wav2Lip environment (e.g., /home/lsm/miniconda3/envs/wav2lip/bin/python)")
+parser.add_argument("--wav2lip_python", type=str, default=None, help="Python executable for Wav2Lip environment")
+parser.add_argument("--latentsync_dir", type=str, default=None, help="Path to LatentSync repository for video dubbing (higher quality)")
+parser.add_argument("--latentsync_python", type=str, default=None, help="Python executable for LatentSync environment")
+parser.add_argument("--lip_sync_engine", type=str, default="auto", choices=["auto", "wav2lip", "latentsync"], help="Lip sync engine to use")
 cmd_args = parser.parse_args()
 
 if not os.path.exists(cmd_args.model_dir):
@@ -67,35 +70,76 @@ tts = IndexTTS2(model_dir=cmd_args.model_dir,
 
 # Video dubbing support
 VIDEO_DUB_ENABLED = False
-wav2lip_engine = None
-if cmd_args.wav2lip_dir and os.path.exists(cmd_args.wav2lip_dir):
-    try:
-        from tools.video_dub import extract_audio_from_video, align_audio_duration, get_audio_duration, Wav2LipEngine, check_ffmpeg
-        check_ffmpeg()
-        # Use specified Python executable for Wav2Lip, or auto-detect from wav2lip conda env
-        wav2lip_python = cmd_args.wav2lip_python
-        if wav2lip_python is None:
-            # Try to auto-detect wav2lip conda environment
-            possible_paths = [
-                os.path.expanduser("~/miniconda3/envs/wav2lip/bin/python"),
-                os.path.expanduser("~/anaconda3/envs/wav2lip/bin/python"),
-                os.path.join(cmd_args.wav2lip_dir, "venv/bin/python"),
-            ]
-            for path in possible_paths:
-                if os.path.exists(path):
-                    wav2lip_python = path
-                    print(f">> Auto-detected Wav2Lip Python: {wav2lip_python}")
-                    break
-        wav2lip_engine = Wav2LipEngine(cmd_args.wav2lip_dir, python_executable=wav2lip_python)
-        if wav2lip_engine.check_requirements():
-            VIDEO_DUB_ENABLED = True
-            print(f">> Video dubbing enabled with Wav2Lip at: {cmd_args.wav2lip_dir}")
-            if wav2lip_python:
-                print(f">> Using Wav2Lip Python: {wav2lip_python}")
-        else:
-            print(f"WARNING: Wav2Lip requirements not met. Video dubbing will be disabled.")
-    except Exception as e:
-        print(f"WARNING: Failed to initialize video dubbing: {e}")
+lip_sync_engine = None
+LIP_SYNC_ENGINE_NAME = None
+
+# Initialize lip sync engine based on settings
+def init_lip_sync_engine():
+    global VIDEO_DUB_ENABLED, lip_sync_engine, LIP_SYNC_ENGINE_NAME
+    
+    engine_choice = cmd_args.lip_sync_engine
+    
+    # Try LatentSync first if specified or auto
+    if engine_choice in ["auto", "latentsync"] and cmd_args.latentsync_dir and os.path.exists(cmd_args.latentsync_dir):
+        try:
+            from tools.video_dub import extract_audio_from_video, align_audio_duration, get_audio_duration, LatentSyncEngine, check_ffmpeg
+            check_ffmpeg()
+            latentsync_python = cmd_args.latentsync_python
+            if latentsync_python is None:
+                possible_paths = [
+                    os.path.expanduser("~/miniconda3/envs/latentsync/bin/python"),
+                    os.path.expanduser("~/anaconda3/envs/latentsync/bin/python"),
+                    os.path.join(cmd_args.latentsync_dir, "venv/bin/python"),
+                ]
+                for path in possible_paths:
+                    if os.path.exists(path):
+                        latentsync_python = path
+                        print(f">> Auto-detected LatentSync Python: {latentsync_python}")
+                        break
+            lip_sync_engine = LatentSyncEngine(cmd_args.latentsync_dir, python_executable=latentsync_python)
+            if lip_sync_engine.check_requirements():
+                VIDEO_DUB_ENABLED = True
+                LIP_SYNC_ENGINE_NAME = "LatentSync"
+                print(f">> Video dubbing enabled with LatentSync at: {cmd_args.latentsync_dir}")
+                if latentsync_python:
+                    print(f">> Using LatentSync Python: {latentsync_python}")
+                return
+            else:
+                print(f"WARNING: LatentSync requirements not met.")
+        except Exception as e:
+            print(f"WARNING: Failed to initialize LatentSync: {e}")
+    
+    # Try Wav2Lip if specified or auto (fallback)
+    if engine_choice in ["auto", "wav2lip"] and cmd_args.wav2lip_dir and os.path.exists(cmd_args.wav2lip_dir):
+        try:
+            from tools.video_dub import extract_audio_from_video, align_audio_duration, get_audio_duration, Wav2LipEngine, check_ffmpeg
+            check_ffmpeg()
+            wav2lip_python = cmd_args.wav2lip_python
+            if wav2lip_python is None:
+                possible_paths = [
+                    os.path.expanduser("~/miniconda3/envs/wav2lip/bin/python"),
+                    os.path.expanduser("~/anaconda3/envs/wav2lip/bin/python"),
+                    os.path.join(cmd_args.wav2lip_dir, "venv/bin/python"),
+                ]
+                for path in possible_paths:
+                    if os.path.exists(path):
+                        wav2lip_python = path
+                        print(f">> Auto-detected Wav2Lip Python: {wav2lip_python}")
+                        break
+            lip_sync_engine = Wav2LipEngine(cmd_args.wav2lip_dir, python_executable=wav2lip_python)
+            if lip_sync_engine.check_requirements():
+                VIDEO_DUB_ENABLED = True
+                LIP_SYNC_ENGINE_NAME = "Wav2Lip"
+                print(f">> Video dubbing enabled with Wav2Lip at: {cmd_args.wav2lip_dir}")
+                if wav2lip_python:
+                    print(f">> Using Wav2Lip Python: {wav2lip_python}")
+                return
+            else:
+                print(f"WARNING: Wav2Lip requirements not met.")
+        except Exception as e:
+            print(f"WARNING: Failed to initialize Wav2Lip: {e}")
+
+init_lip_sync_engine()
 
 # 支持的语言列表
 LANGUAGES = {
@@ -593,21 +637,28 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
     # =========================================================================
     # Video Dubbing Tab
     # =========================================================================
-    with gr.Tab(i18n("视频配音"), visible=VIDEO_DUB_ENABLED):
+    with gr.Tab(i18n("视频配音") + (f" ({LIP_SYNC_ENGINE_NAME})" if LIP_SYNC_ENGINE_NAME else ""), visible=VIDEO_DUB_ENABLED):
         if not VIDEO_DUB_ENABLED:
             gr.Markdown(f"""
             ### {i18n("视频配音功能未启用")}
             
             {i18n("请使用以下参数启动 WebUI 以启用视频配音功能")}：
             
+            **Wav2Lip** ({i18n("较快，显存要求低")}):
             ```
             python webui.py --wav2lip_dir /path/to/Wav2Lip
             ```
+            
+            **LatentSync** ({i18n("质量更高，需要8GB+显存")}):
+            ```
+            python webui.py --latentsync_dir /path/to/LatentSync
+            ```
             """)
         else:
+            engine_info = f"**{i18n('当前引擎')}:** {LIP_SYNC_ENGINE_NAME}"
             gr.Markdown(f"""
             ### {i18n("视频配音 + 口型同步")}
-            {i18n("上传视频和配音文本，自动生成口型同步的新视频")}
+            {i18n("上传视频和配音文本，自动生成口型同步的新视频")} | {engine_info}
             """)
             
             with gr.Row():
@@ -757,7 +808,7 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                     # Step 3: Generate lip-synced video
                     output_path = os.path.join(current_dir, "outputs", f"video_dub_{int(time.time())}.mp4")
                     
-                    wav2lip_engine.generate(
+                    lip_sync_engine.generate(
                         video_path=video_path,
                         audio_path=tts_audio,
                         output_path=output_path,
@@ -766,7 +817,7 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                     
                     progress(1.0, desc=i18n("完成"))
                     
-                    return output_path, f"✅ {i18n('视频生成成功')}: {output_path}"
+                    return output_path, f"✅ {i18n('视频生成成功')} ({LIP_SYNC_ENGINE_NAME}): {output_path}"
                     
                 except Exception as e:
                     import traceback
