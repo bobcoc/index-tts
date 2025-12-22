@@ -815,19 +815,38 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                     import torch
                     import gc
                     
-                    # Move TTS model to CPU temporarily to free GPU memory
-                    if hasattr(tts, 'to_cpu'):
-                        tts.to_cpu()
-                    else:
-                        # Manual move for models without to_cpu method
-                        for attr_name in ['gpt', 'hifi_gan', 'bigvgan', 's2mel_model']:
-                            if hasattr(tts, attr_name):
-                                model = getattr(tts, attr_name)
-                                if model is not None and hasattr(model, 'cpu'):
-                                    try:
-                                        model.cpu()
-                                    except:
-                                        pass
+                    # Move TTS models to CPU temporarily to free GPU memory
+                    tts_models_to_offload = [
+                        'gpt', 'semantic_model', 'semantic_codec', 's2mel',
+                        'campplus_model', 'bigvgan'
+                    ]
+                    tts_tensors_to_offload = [
+                        'semantic_mean', 'semantic_std', 'emo_matrix', 'spk_matrix'
+                    ]
+                    
+                    for attr_name in tts_models_to_offload:
+                        if hasattr(tts, attr_name):
+                            model = getattr(tts, attr_name)
+                            if model is not None and hasattr(model, 'cpu'):
+                                try:
+                                    model.cpu()
+                                except Exception as e:
+                                    if cmd_args.verbose:
+                                        print(f">> Failed to move {attr_name} to CPU: {e}")
+                    
+                    for attr_name in tts_tensors_to_offload:
+                        if hasattr(tts, attr_name):
+                            tensor = getattr(tts, attr_name)
+                            if tensor is not None:
+                                try:
+                                    if isinstance(tensor, (list, tuple)):
+                                        # Handle split tensors like emo_matrix and spk_matrix
+                                        setattr(tts, attr_name, tuple(t.cpu() for t in tensor))
+                                    else:
+                                        setattr(tts, attr_name, tensor.cpu())
+                                except Exception as e:
+                                    if cmd_args.verbose:
+                                        print(f">> Failed to move {attr_name} to CPU: {e}")
                     
                     # Clear CUDA cache
                     gc.collect()
@@ -845,21 +864,34 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                             verbose=cmd_args.verbose
                         )
                     finally:
-                        # Reload TTS model to GPU after lip sync
-                        if hasattr(tts, 'to_cuda'):
-                            tts.to_cuda()
-                        else:
-                            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-                            for attr_name in ['gpt', 'hifi_gan', 'bigvgan', 's2mel_model']:
-                                if hasattr(tts, attr_name):
-                                    model = getattr(tts, attr_name)
-                                    if model is not None and hasattr(model, 'to'):
-                                        try:
-                                            model.to(device)
-                                        except:
-                                            pass
+                        # Reload TTS models to GPU after lip sync
+                        device = torch.device(tts.device if hasattr(tts, 'device') else 'cuda')
+                        
+                        for attr_name in tts_models_to_offload:
+                            if hasattr(tts, attr_name):
+                                model = getattr(tts, attr_name)
+                                if model is not None and hasattr(model, 'to'):
+                                    try:
+                                        model.to(device)
+                                    except Exception as e:
+                                        if cmd_args.verbose:
+                                            print(f">> Failed to move {attr_name} to GPU: {e}")
+                        
+                        for attr_name in tts_tensors_to_offload:
+                            if hasattr(tts, attr_name):
+                                tensor = getattr(tts, attr_name)
+                                if tensor is not None:
+                                    try:
+                                        if isinstance(tensor, (list, tuple)):
+                                            setattr(tts, attr_name, tuple(t.to(device) for t in tensor))
+                                        else:
+                                            setattr(tts, attr_name, tensor.to(device))
+                                    except Exception as e:
+                                        if cmd_args.verbose:
+                                            print(f">> Failed to move {attr_name} to GPU: {e}")
+                        
                         if cmd_args.verbose:
-                            print(f">> TTS model reloaded to GPU")
+                            print(f">> TTS models reloaded to GPU")
                     
                     progress(1.0, desc=i18n("完成"))
                     
