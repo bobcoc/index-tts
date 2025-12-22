@@ -520,19 +520,127 @@ class LatentSyncEngine(LipSyncEngine):
 # Step 4 (Optional): Audio Duration Alignment
 # =============================================================================
 
+def get_video_duration(video_path: str) -> float:
+    """Get duration of a video file in seconds using ffprobe."""
+    cmd = [
+        "ffprobe", "-v", "quiet",
+        "-show_entries", "format=duration",
+        "-of", "csv=p=0",
+        video_path
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to get duration of {video_path}")
+    return float(result.stdout.strip())
+
+
+def extend_video_from_tail(
+    video_path: str,
+    target_duration: float,
+    output_path: str,
+    verbose: bool = True
+) -> str:
+    """
+    如果视频时长不足，从视频后半部分截取片段来补充。
+    
+    Args:
+        video_path: 原视频路径
+        target_duration: 目标时长（秒）
+        output_path: 输出视频路径
+        verbose: 是否打印详细信息
+    
+    Returns:
+        处理后的视频路径
+    """
+    video_duration = get_video_duration(video_path)
+    
+    if video_duration >= target_duration:
+        # 视频足够长，直接返回原视频
+        return video_path
+    
+    # 视频不够长，需要从后面截取补充
+    shortage = target_duration - video_duration
+    
+    if verbose:
+        print(f">> 视频时长不足: {video_duration:.2f}s < {target_duration:.2f}s")
+        print(f">> 需要从视频后部补充 {shortage:.2f}s")
+    
+    # 计算从视频后面截取的起始位置
+    # 策略：从视频的后半部分开始截取，避免重复开头
+    if video_duration > shortage:
+        # 从视频后面截取
+        start_time = max(0, video_duration - shortage)
+    else:
+        # 视频太短，循环使用
+        start_time = 0
+    
+    temp_dir = os.path.dirname(output_path) or "."
+    extra_clip = os.path.join(temp_dir, "_extend_clip.mp4")
+    
+    try:
+        # 截取补充片段
+        cmd_extract = [
+            "ffmpeg", "-y", "-i", video_path,
+            "-ss", str(start_time),
+            "-t", str(shortage),
+            "-c:v", "libx264", "-c:a", "aac",
+            extra_clip
+        ]
+        subprocess.run(cmd_extract, capture_output=True, check=True)
+        
+        if verbose:
+            print(f">> 从 {start_time:.2f}s 截取 {shortage:.2f}s 补充片段")
+        
+        # 创建拼接文件列表
+        concat_list = os.path.join(temp_dir, "_concat.txt")
+        with open(concat_list, "w") as f:
+            f.write(f"file '{os.path.abspath(video_path)}'\n")
+            f.write(f"file '{os.path.abspath(extra_clip)}'\n")
+        
+        # 拼接视频
+        cmd_concat = [
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", concat_list,
+            "-c:v", "libx264", "-c:a", "aac",
+            output_path
+        ]
+        subprocess.run(cmd_concat, capture_output=True, check=True)
+        
+        if verbose:
+            final_duration = get_video_duration(output_path)
+            print(f">> 拼接后视频时长: {final_duration:.2f}s")
+        
+        # 清理临时文件
+        if os.path.exists(extra_clip):
+            os.remove(extra_clip)
+        if os.path.exists(concat_list):
+            os.remove(concat_list)
+        
+        return output_path
+        
+    except Exception as e:
+        # 清理临时文件
+        if os.path.exists(extra_clip):
+            os.remove(extra_clip)
+        raise e
+
+
 def align_audio_duration(
     audio_path: str,
     target_duration: float,
     output_path: str,
     orig_audio_path: Optional[str] = None,
-    verbose: bool = True
+    verbose: bool = True,
+    no_speed_change: bool = False
 ) -> str:
     """
     Adjust audio duration to match target duration.
     
     - If audio is shorter: pad with original audio (if provided) or silence
     - If audio is much longer: truncate to target duration
-    - If difference is small: use ffmpeg atempo to adjust speed
+    - If difference is small and no_speed_change=False: use ffmpeg atempo to adjust speed
+    - If no_speed_change=True: never adjust speed, only pad/truncate
     
     Args:
         audio_path: Path to input audio (TTS generated)
@@ -540,6 +648,7 @@ def align_audio_duration(
         output_path: Path to output audio
         orig_audio_path: Path to original audio (for padding shorter audio)
         verbose: Print progress info
+        no_speed_change: If True, never adjust audio speed (only pad/truncate)
     
     Returns:
         Path to adjusted audio
@@ -552,102 +661,66 @@ def align_audio_duration(
             shutil.copy(audio_path, output_path)
         return output_path
     
-    # Calculate tempo factor
-    tempo = current_duration / target_duration
+    # Calculate ratio
+    ratio = current_duration / target_duration
     
-    # Case 1: TTS audio is much shorter than video - pad with original audio
-    if tempo < 0.5:
+    # Case 1: TTS audio is shorter than target - pad with silence
+    if current_duration < target_duration:
+        silence_duration = target_duration - current_duration
         if verbose:
-            print(f">> TTS audio too short ({current_duration:.2f}s vs {target_duration:.2f}s), padding with original audio")
-        
-        if orig_audio_path and os.path.exists(orig_audio_path):
-            # Mix: TTS audio at beginning + original audio for the rest
-            # Extract the remaining part from original audio
-            remaining_start = current_duration
-            remaining_duration = target_duration - current_duration
-            
-            # Create temp file for the remaining part
-            temp_remaining = output_path + ".remaining.wav"
-            cmd_extract = [
-                "ffmpeg", "-y",
-                "-i", orig_audio_path,
-                "-ss", str(remaining_start),
-                "-t", str(remaining_duration),
-                "-acodec", "pcm_s16le",
-                temp_remaining
-            ]
-            run_command(cmd_extract, "Extracting remaining original audio", verbose=False)
-            
-            # Concatenate TTS audio + remaining original audio
-            concat_list = output_path + ".concat.txt"
-            with open(concat_list, "w") as f:
-                f.write(f"file '{os.path.abspath(audio_path)}'\n")
-                f.write(f"file '{os.path.abspath(temp_remaining)}'\n")
-            
-            cmd_concat = [
-                "ffmpeg", "-y",
-                "-f", "concat",
-                "-safe", "0",
-                "-i", concat_list,
-                "-acodec", "pcm_s16le",
-                output_path
-            ]
-            run_command(cmd_concat, "Concatenating audio", verbose=False)
-            
-            # Cleanup temp files
-            os.remove(temp_remaining)
-            os.remove(concat_list)
-            
-            if verbose:
-                print(f"   Combined audio: TTS ({current_duration:.2f}s) + Original tail ({remaining_duration:.2f}s)")
-        else:
-            # No original audio, pad with silence
-            silence_duration = target_duration - current_duration
-            cmd = [
-                "ffmpeg", "-y",
-                "-i", audio_path,
-                "-af", f"apad=whole_dur={target_duration}",
-                "-acodec", "pcm_s16le",
-                output_path
-            ]
-            run_command(cmd, "Padding audio with silence", verbose)
-            if verbose:
-                print(f"   Padded with {silence_duration:.2f}s silence")
-        
-        return output_path
-    
-    # Case 2: TTS audio is much longer than video - truncate
-    if tempo > 2.0:
-        if verbose:
-            print(f">> TTS audio too long ({current_duration:.2f}s vs {target_duration:.2f}s), truncating")
+            print(f">> TTS 音频较短 ({current_duration:.2f}s vs {target_duration:.2f}s)，填充静音")
         
         cmd = [
             "ffmpeg", "-y",
             "-i", audio_path,
-            "-t", str(target_duration),
+            "-af", f"apad=whole_dur={target_duration}",
             "-acodec", "pcm_s16le",
             output_path
         ]
-        run_command(cmd, "Truncating audio", verbose=False)
-        
+        run_command(cmd, "Padding audio with silence", verbose=False)
         if verbose:
-            print(f"   Truncated to {target_duration:.2f}s")
+            print(f"   填充了 {silence_duration:.2f}s 静音")
         
         return output_path
     
-    # Case 3: Moderate difference - use atempo to adjust speed
-    if verbose:
-        print(f">> Aligning audio duration: {current_duration:.2f}s -> {target_duration:.2f}s (tempo={tempo:.2f})")
+    # Case 2: TTS audio is longer than target
+    if current_duration > target_duration:
+        if no_speed_change or ratio > 1.5:
+            # 不调整速度，直接截断音频
+            # 注意：调用者可以选择扩展视频而不是截断音频
+            if verbose:
+                print(f">> TTS 音频较长 ({current_duration:.2f}s vs {target_duration:.2f}s)，截断音频")
+            
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", audio_path,
+                "-t", str(target_duration),
+                "-acodec", "pcm_s16le",
+                output_path
+            ]
+            run_command(cmd, "Truncating audio", verbose=False)
+            
+            if verbose:
+                print(f"   截断到 {target_duration:.2f}s")
+        else:
+            # 小范围差异，使用 atempo 调整速度
+            tempo = ratio
+            if verbose:
+                print(f">> 对齐音频时长: {current_duration:.2f}s -> {target_duration:.2f}s (tempo={tempo:.2f})")
+            
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", audio_path,
+                "-filter:a", f"atempo={tempo}",
+                "-acodec", "pcm_s16le",
+                output_path
+            ]
+            run_command(cmd, "Adjusting audio duration", verbose=False)
+        
+        return output_path
     
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", audio_path,
-        "-filter:a", f"atempo={tempo}",
-        "-acodec", "pcm_s16le",
-        output_path
-    ]
-    
-    run_command(cmd, "Adjusting audio duration", verbose)
+    # 默认返回
+    shutil.copy(audio_path, output_path)
     return output_path
 
 

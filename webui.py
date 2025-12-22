@@ -37,6 +37,8 @@ parser.add_argument("--wav2lip_python", type=str, default=None, help="Python exe
 parser.add_argument("--latentsync_dir", type=str, default=None, help="Path to LatentSync repository for video dubbing (higher quality)")
 parser.add_argument("--latentsync_python", type=str, default=None, help="Python executable for LatentSync environment")
 parser.add_argument("--latentsync_low_vram", action="store_true", default=False, help="Use 256px resolution for LatentSync to reduce VRAM usage (~8GB instead of ~18GB)")
+parser.add_argument("--subprocess_dub", action="store_true", default=False, help="Run video dubbing in subprocess mode to completely isolate VRAM usage")
+parser.add_argument("--extend_video", action="store_true", default=False, help="Extend video from tail if audio is longer (instead of truncating audio)")
 parser.add_argument("--lip_sync_engine", type=str, default="auto", choices=["auto", "wav2lip", "latentsync"], help="Lip sync engine to use")
 cmd_args = parser.parse_args()
 
@@ -766,6 +768,169 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                 os.makedirs(temp_dir, exist_ok=True)
                 print(f">> Temp dir: {temp_dir}")
                 
+                # 子进程模式：TTS 和 LipSync 都在独立进程中运行，完全隔离显存
+                if cmd_args.subprocess_dub:
+                    return generate_dubbed_video_subprocess(
+                        video_path, script_text, spk_audio, align_duration,
+                        spk_extract_start, spk_extract_duration, emo_control, emo_alpha,
+                        temp_dir, progress
+                    )
+                
+                # 常规模式（保持原有逻辑）
+                return generate_dubbed_video_inprocess(
+                    video_path, script_text, spk_audio, align_duration,
+                    spk_extract_start, spk_extract_duration, emo_control, emo_alpha,
+                    temp_dir, progress
+                )
+            
+            def generate_dubbed_video_subprocess(
+                video_path, script_text, spk_audio, align_duration,
+                spk_extract_start, spk_extract_duration, emo_control, emo_alpha,
+                temp_dir, progress
+            ):
+                """
+                子进程模式：TTS 和 LipSync 都在独立进程中运行，完成后显存完全释放。
+                """
+                import subprocess
+                
+                try:
+                    progress(0.1, desc=i18n("提取参考音频..."))
+                    
+                    # Step 1: Extract reference audio
+                    if spk_audio is None:
+                        spk_audio_path = os.path.join(temp_dir, "spk_prompt.wav")
+                        extract_audio_from_video(
+                            video_path,
+                            spk_audio_path,
+                            sample_rate=24000,
+                            start_time=float(spk_extract_start),
+                            duration=float(spk_extract_duration),
+                            verbose=cmd_args.verbose
+                        )
+                    else:
+                        spk_audio_path = spk_audio
+                    
+                    progress(0.2, desc=i18n("生成配音 (子进程)..."))
+                    
+                    # Step 2: Generate TTS audio using subprocess
+                    tts_audio_raw = os.path.join(temp_dir, "tts_audio_raw.wav")
+                    use_emo_text = (emo_control == i18n("根据文本推断情感"))
+                    
+                    tts_cmd = [
+                        sys.executable,
+                        os.path.join(current_dir, "tools", "tts_worker.py"),
+                        "--prompt_audio", spk_audio_path,
+                        "--text", script_text.strip(),
+                        "--output", tts_audio_raw,
+                        "--model_dir", cmd_args.model_dir,
+                        "--max_tokens", str(cmd_args.gui_seg_tokens),
+                    ]
+                    
+                    if cmd_args.fp16:
+                        tts_cmd.append("--fp16")
+                    if use_emo_text:
+                        tts_cmd.append("--use_emo_text")
+                        tts_cmd.extend(["--emo_alpha", str(float(emo_alpha))])
+                    if cmd_args.verbose:
+                        tts_cmd.append("--verbose")
+                    
+                    print(f">> Running TTS subprocess...")
+                    tts_result = subprocess.run(tts_cmd, capture_output=True, text=True)
+                    
+                    if tts_result.returncode != 0:
+                        print(f"TTS subprocess failed!")
+                        print(f"STDOUT: {tts_result.stdout}")
+                        print(f"STDERR: {tts_result.stderr}")
+                        raise RuntimeError(f"TTS 生成失败: {tts_result.stderr}")
+                    
+                    if not os.path.exists(tts_audio_raw):
+                        raise RuntimeError("TTS 输出文件未生成")
+                    
+                    print(f">> TTS audio generated: {tts_audio_raw}")
+                    
+                    # Get audio duration for video extension
+                    tts_duration = get_audio_duration(tts_audio_raw)
+                    
+                    progress(0.5, desc=i18n("处理音视频时长..."))
+                    
+                    # Handle video/audio duration mismatch
+                    from tools.video_dub import get_video_duration, extend_video_from_tail
+                    video_duration = get_video_duration(video_path)
+                    
+                    video_to_use = video_path
+                    tts_audio = tts_audio_raw
+                    
+                    if tts_duration > video_duration and cmd_args.extend_video:
+                        # 扩展视频而不是截断音频
+                        extended_video = os.path.join(temp_dir, "extended_video.mp4")
+                        video_to_use = extend_video_from_tail(
+                            video_path, tts_duration, extended_video, 
+                            verbose=cmd_args.verbose
+                        )
+                        print(f">> Extended video: {video_to_use}")
+                    elif align_duration and abs(tts_duration - video_duration) > 0.1:
+                        # 对齐音频时长到视频
+                        tts_audio = os.path.join(temp_dir, "tts_audio.wav")
+                        align_audio_duration(
+                            tts_audio_raw, video_duration, tts_audio,
+                            no_speed_change=cmd_args.extend_video,
+                            verbose=cmd_args.verbose
+                        )
+                    
+                    progress(0.6, desc=i18n("生成口型同步视频 (子进程)..."))
+                    
+                    # Step 3: Generate lip-synced video using subprocess
+                    output_path = os.path.join(current_dir, "outputs", f"video_dub_{int(time.time())}.mp4")
+                    
+                    lipsync_cmd = [
+                        sys.executable,
+                        os.path.join(current_dir, "tools", "lipsync_cli.py"),
+                        "--video", video_to_use,
+                        "--audio", tts_audio,
+                        "--output", output_path,
+                        "--engine", "latentsync",
+                        "--latentsync_dir", cmd_args.latentsync_dir,
+                    ]
+                    
+                    if cmd_args.latentsync_python:
+                        lipsync_cmd.extend(["--latentsync_python", cmd_args.latentsync_python])
+                    if cmd_args.latentsync_low_vram:
+                        lipsync_cmd.append("--low_vram")
+                    if not cmd_args.verbose:
+                        lipsync_cmd.append("--quiet")
+                    
+                    print(f">> Running LipSync subprocess...")
+                    lipsync_result = subprocess.run(lipsync_cmd, capture_output=not cmd_args.verbose, text=True)
+                    
+                    if lipsync_result.returncode != 0:
+                        print(f"LipSync subprocess failed!")
+                        if not cmd_args.verbose:
+                            print(f"STDOUT: {lipsync_result.stdout}")
+                            print(f"STDERR: {lipsync_result.stderr}")
+                        raise RuntimeError(f"口型同步失败")
+                    
+                    if not os.path.exists(output_path):
+                        raise RuntimeError("输出视频文件未生成")
+                    
+                    progress(1.0, desc=i18n("完成"))
+                    
+                    return output_path, f"✅ {i18n('视频生成成功')} ({LIP_SYNC_ENGINE_NAME} 子进程模式): {output_path}"
+                    
+                except Exception as e:
+                    import traceback
+                    error_msg = f"❌ {i18n('生成失败')}: {str(e)}"
+                    print(f"Video dubbing error: {e}")
+                    traceback.print_exc()
+                    return None, error_msg
+            
+            def generate_dubbed_video_inprocess(
+                video_path, script_text, spk_audio, align_duration,
+                spk_extract_start, spk_extract_duration, emo_control, emo_alpha,
+                temp_dir, progress
+            ):
+                """
+                常规模式：TTS 在主进程运行，LipSync 在子进程运行。
+                """
                 try:
                     progress(0.1, desc=i18n("提取参考音频..."))
                     
@@ -826,8 +991,21 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                         'campplus_model', 'bigvgan'
                     ]
                     tts_tensors_to_offload = [
-                        'semantic_mean', 'semantic_std', 'emo_matrix', 'spk_matrix'
+                        'semantic_mean', 'semantic_std', 'emo_matrix', 'spk_matrix',
+                        # Cache tensors that may hold GPU memory
+                        'cache_spk_cond', 'cache_s2mel_style', 'cache_s2mel_prompt',
+                        'cache_emo_cond', 'cache_mel'
                     ]
+                    
+                    # Also offload QwenEmotion model if it exists
+                    if hasattr(tts, 'qwen_emo') and hasattr(tts.qwen_emo, 'model'):
+                        try:
+                            tts.qwen_emo.model.cpu()
+                            if cmd_args.verbose:
+                                print(f">> Moved qwen_emo.model to CPU")
+                        except Exception as e:
+                            if cmd_args.verbose:
+                                print(f">> Failed to move qwen_emo.model to CPU: {e}")
                     
                     for attr_name in tts_models_to_offload:
                         if hasattr(tts, attr_name):
@@ -846,18 +1024,24 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                                 try:
                                     if isinstance(tensor, (list, tuple)):
                                         # Handle split tensors like emo_matrix and spk_matrix
-                                        setattr(tts, attr_name, tuple(t.cpu() for t in tensor))
-                                    else:
+                                        setattr(tts, attr_name, tuple(t.cpu() if hasattr(t, 'cpu') else t for t in tensor))
+                                    elif hasattr(tensor, 'cpu'):
                                         setattr(tts, attr_name, tensor.cpu())
                                 except Exception as e:
                                     if cmd_args.verbose:
                                         print(f">> Failed to move {attr_name} to CPU: {e}")
                     
-                    # Clear CUDA cache
+                    # Clear CUDA cache aggressively
                     gc.collect()
                     torch.cuda.empty_cache()
+                    torch.cuda.synchronize()  # Wait for all CUDA operations to complete
+                    
                     if cmd_args.verbose:
-                        print(f">> GPU memory freed for lip sync")
+                        # Print current GPU memory usage
+                        if torch.cuda.is_available():
+                            allocated = torch.cuda.memory_allocated() / 1024**3
+                            reserved = torch.cuda.memory_reserved() / 1024**3
+                            print(f">> GPU memory after offload: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
                     
                     output_path = os.path.join(current_dir, "outputs", f"video_dub_{int(time.time())}.mp4")
                     
@@ -871,6 +1055,16 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                     finally:
                         # Reload TTS models to GPU after lip sync
                         device = torch.device(tts.device if hasattr(tts, 'device') else 'cuda')
+                        
+                        # Reload QwenEmotion model if it exists
+                        if hasattr(tts, 'qwen_emo') and hasattr(tts.qwen_emo, 'model'):
+                            try:
+                                tts.qwen_emo.model.to(device)
+                                if cmd_args.verbose:
+                                    print(f">> Moved qwen_emo.model to GPU")
+                            except Exception as e:
+                                if cmd_args.verbose:
+                                    print(f">> Failed to move qwen_emo.model to GPU: {e}")
                         
                         for attr_name in tts_models_to_offload:
                             if hasattr(tts, attr_name):
@@ -888,8 +1082,8 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                                 if tensor is not None:
                                     try:
                                         if isinstance(tensor, (list, tuple)):
-                                            setattr(tts, attr_name, tuple(t.to(device) for t in tensor))
-                                        else:
+                                            setattr(tts, attr_name, tuple(t.to(device) if hasattr(t, 'to') else t for t in tensor))
+                                        elif hasattr(tensor, 'to'):
                                             setattr(tts, attr_name, tensor.to(device))
                                     except Exception as e:
                                         if cmd_args.verbose:
