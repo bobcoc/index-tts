@@ -141,6 +141,10 @@ def init_lip_sync_engine():
 
 init_lip_sync_engine()
 
+# Import video dubbing utilities if enabled
+if VIDEO_DUB_ENABLED:
+    from tools.video_dub import extract_audio_from_video, align_audio_duration, get_audio_duration
+
 # 支持的语言列表
 LANGUAGES = {
     "中文": "zh_CN",
