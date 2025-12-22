@@ -379,15 +379,17 @@ class LatentSyncEngine(LipSyncEngine):
         
         # Auto-detect config based on checkpoint or use default
         if config == "auto":
-            # LatentSync 1.6 uses 512x512, earlier versions use 256x256
-            # Check if stage2_512.yaml should be used (for 1.6)
-            # Default to stage2_512 for better quality (LatentSync 1.6)
+            # Default to stage2_512 for LatentSync 1.6 (512 resolution model)
+            # TTS model will be offloaded to CPU before running LatentSync
             config_512 = self.latentsync_dir / "configs/unet/stage2_512.yaml"
             if config_512.exists():
                 self.config = "configs/unet/stage2_512.yaml"
                 print(f">> Using LatentSync 512x512 config (1.6)")
             else:
                 self.config = "configs/unet/stage2.yaml"
+        elif config == "efficient":
+            self.config = "configs/unet/stage2_efficient.yaml"
+            print(f">> Using LatentSync efficient config (256px, lower VRAM)")
         else:
             self.config = f"configs/unet/{config}.yaml"
     

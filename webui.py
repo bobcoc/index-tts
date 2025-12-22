@@ -811,14 +811,55 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                     progress(0.6, desc=i18n("生成口型同步视频..."))
                     
                     # Step 3: Generate lip-synced video
+                    # Free up GPU memory before calling LatentSync
+                    import torch
+                    import gc
+                    
+                    # Move TTS model to CPU temporarily to free GPU memory
+                    if hasattr(tts, 'to_cpu'):
+                        tts.to_cpu()
+                    else:
+                        # Manual move for models without to_cpu method
+                        for attr_name in ['gpt', 'hifi_gan', 'bigvgan', 's2mel_model']:
+                            if hasattr(tts, attr_name):
+                                model = getattr(tts, attr_name)
+                                if model is not None and hasattr(model, 'cpu'):
+                                    try:
+                                        model.cpu()
+                                    except:
+                                        pass
+                    
+                    # Clear CUDA cache
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    if cmd_args.verbose:
+                        print(f">> GPU memory freed for lip sync")
+                    
                     output_path = os.path.join(current_dir, "outputs", f"video_dub_{int(time.time())}.mp4")
                     
-                    lip_sync_engine.generate(
-                        video_path=video_path,
-                        audio_path=tts_audio,
-                        output_path=output_path,
-                        verbose=cmd_args.verbose
-                    )
+                    try:
+                        lip_sync_engine.generate(
+                            video_path=video_path,
+                            audio_path=tts_audio,
+                            output_path=output_path,
+                            verbose=cmd_args.verbose
+                        )
+                    finally:
+                        # Reload TTS model to GPU after lip sync
+                        if hasattr(tts, 'to_cuda'):
+                            tts.to_cuda()
+                        else:
+                            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                            for attr_name in ['gpt', 'hifi_gan', 'bigvgan', 's2mel_model']:
+                                if hasattr(tts, attr_name):
+                                    model = getattr(tts, attr_name)
+                                    if model is not None and hasattr(model, 'to'):
+                                        try:
+                                            model.to(device)
+                                        except:
+                                            pass
+                        if cmd_args.verbose:
+                            print(f">> TTS model reloaded to GPU")
                     
                     progress(1.0, desc=i18n("完成"))
                     
