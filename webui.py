@@ -36,6 +36,7 @@ parser.add_argument("--wav2lip_dir", type=str, default=None, help="Path to Wav2L
 parser.add_argument("--wav2lip_python", type=str, default=None, help="Python executable for Wav2Lip environment")
 parser.add_argument("--latentsync_dir", type=str, default=None, help="Path to LatentSync repository for video dubbing (higher quality)")
 parser.add_argument("--latentsync_python", type=str, default=None, help="Python executable for LatentSync environment")
+parser.add_argument("--latentsync_low_vram", action="store_true", default=False, help="Use 256px resolution for LatentSync to reduce VRAM usage (~8GB instead of ~18GB)")
 parser.add_argument("--lip_sync_engine", type=str, default="auto", choices=["auto", "wav2lip", "latentsync"], help="Lip sync engine to use")
 cmd_args = parser.parse_args()
 
@@ -96,7 +97,11 @@ def init_lip_sync_engine():
                         latentsync_python = path
                         print(f">> Auto-detected LatentSync Python: {latentsync_python}")
                         break
-            lip_sync_engine = LatentSyncEngine(cmd_args.latentsync_dir, python_executable=latentsync_python)
+            lip_sync_engine = LatentSyncEngine(
+                cmd_args.latentsync_dir, 
+                python_executable=latentsync_python,
+                low_vram_mode=cmd_args.latentsync_low_vram
+            )
             if lip_sync_engine.check_requirements():
                 VIDEO_DUB_ENABLED = True
                 LIP_SYNC_ENGINE_NAME = "LatentSync"

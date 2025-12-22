@@ -361,7 +361,8 @@ class LatentSyncEngine(LipSyncEngine):
         latentsync_dir: str,
         checkpoint: str = "checkpoints/latentsync_unet.pt",
         config: str = "auto",  # auto, stage2, stage2_512, stage2_efficient
-        python_executable: Optional[str] = None
+        python_executable: Optional[str] = None,
+        low_vram_mode: bool = False
     ):
         """
         Initialize LatentSync engine.
@@ -372,13 +373,28 @@ class LatentSyncEngine(LipSyncEngine):
             config: Config to use: 'auto' (detect from model), 'stage2' (256px), 
                    'stage2_512' (512px), 'stage2_efficient' (256px, lower VRAM)
             python_executable: Python executable to use (default: sys.executable)
+            low_vram_mode: Use 256px resolution to reduce VRAM usage
         """
         self.latentsync_dir = Path(latentsync_dir)
         self.checkpoint = checkpoint
         self.python_executable = python_executable or sys.executable
+        self.low_vram_mode = low_vram_mode
         
         # Auto-detect config based on checkpoint or use default
-        if config == "auto":
+        if low_vram_mode:
+            # Force use efficient/256px config for low VRAM
+            config_efficient = self.latentsync_dir / "configs/unet/stage2_efficient.yaml"
+            config_256 = self.latentsync_dir / "configs/unet/stage2.yaml"
+            if config_efficient.exists():
+                self.config = "configs/unet/stage2_efficient.yaml"
+                print(f">> Using LatentSync efficient config (256px, low VRAM mode)")
+            elif config_256.exists():
+                self.config = "configs/unet/stage2.yaml"
+                print(f">> Using LatentSync 256px config (low VRAM mode)")
+            else:
+                self.config = "configs/unet/stage2_512.yaml"
+                print(f">> Warning: Low VRAM mode requested but only 512px config available")
+        elif config == "auto":
             # Default to stage2_512 for LatentSync 1.6 (512 resolution model)
             # TTS model will be offloaded to CPU before running LatentSync
             config_512 = self.latentsync_dir / "configs/unet/stage2_512.yaml"
@@ -470,6 +486,8 @@ class LatentSyncEngine(LipSyncEngine):
         # Run LatentSync inference
         env = os.environ.copy()
         env["PYTHONPATH"] = str(self.latentsync_dir)
+        # Optimize CUDA memory allocation to reduce fragmentation
+        env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
         
         if verbose:
             print(f">> Generating lip-synced video with LatentSync...")
