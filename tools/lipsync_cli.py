@@ -360,14 +360,15 @@ def main():
         print(f">> 视频时长: {video_duration:.2f}s")
     
     # 处理视频长度不足
-    video_to_use = args.video
+    video_to_use = os.path.abspath(args.video)
     temp_video = None
     
     if video_duration < audio_duration:
         if args.extend_video:
-            temp_video = args.output + ".extended.mp4"
+            # 使用绝对路径，因为 LatentSync 在其他目录运行
+            temp_video = os.path.abspath(args.output + ".extended.mp4")
             video_to_use = extend_video_if_needed(
-                args.video, audio_duration, temp_video, verbose
+                os.path.abspath(args.video), audio_duration, temp_video, verbose
             )
         else:
             print(f"警告: 视频 ({video_duration:.2f}s) 比音频 ({audio_duration:.2f}s) 短")
@@ -382,8 +383,8 @@ def main():
             
             success = run_latentsync(
                 video_path=video_to_use,
-                audio_path=args.audio,
-                output_path=args.output,
+                audio_path=os.path.abspath(args.audio),
+                output_path=os.path.abspath(args.output),
                 latentsync_dir=args.latentsync_dir,
                 python_executable=args.latentsync_python,
                 low_vram=args.low_vram,
@@ -398,8 +399,8 @@ def main():
             
             success = run_wav2lip(
                 video_path=video_to_use,
-                audio_path=args.audio,
-                output_path=args.output,
+                audio_path=os.path.abspath(args.audio),
+                output_path=os.path.abspath(args.output),
                 wav2lip_dir=args.wav2lip_dir,
                 python_executable=args.wav2lip_python,
                 verbose=verbose
