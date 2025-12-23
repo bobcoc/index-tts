@@ -516,9 +516,9 @@ def main():
     parser.add_argument("--wav2lip_python", type=str, help="Wav2Lip Python 解释器路径")
     
     # 视频/音频对齐
-    parser.add_argument("--align_mode", type=str, default="none",
+    parser.add_argument("--align_mode", type=str, default="speed",
                        choices=["none", "speed", "extend_tail", "extend_head"],
-                       help="视频/音频时长不匹配时的对齐模式 (默认: none)")
+                       help="视频/音频时长不匹配时的对齐模式 (默认: speed)")
     # 兼容旧参数
     parser.add_argument("--extend_video", action="store_true", 
                        help="[已废弃] 请使用 --align_mode extend_tail")
