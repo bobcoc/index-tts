@@ -505,10 +505,16 @@ class LatentSyncEngine(LipSyncEngine):
         )
         
         if result.returncode != 0:
-            print(f"ERROR: LatentSync failed!")
-            print(f"STDOUT: {result.stdout}")
-            print(f"STDERR: {result.stderr}")
-            raise RuntimeError("LatentSync inference failed")
+            error_msg = result.stderr or result.stdout or "Unknown error"
+            # Extract meaningful error message
+            if "Face not detected" in error_msg:
+                print(f"ERROR: LatentSync failed - Face not detected in video!")
+                print(f"Please ensure the video contains a clearly visible face throughout.")
+            else:
+                print(f"ERROR: LatentSync failed!")
+                print(f"STDOUT: {result.stdout}")
+                print(f"STDERR: {result.stderr}")
+            raise RuntimeError(f"LatentSync inference failed: {error_msg[-500:] if len(error_msg) > 500 else error_msg}")
         
         if verbose:
             print(f"   Lip-synced video saved to: {output_path}")

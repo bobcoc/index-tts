@@ -1098,7 +1098,11 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                     
                 except Exception as e:
                     import traceback
-                    error_msg = f"❌ {i18n('生成失败')}: {str(e)}"
+                    error_str = str(e)
+                    if "Face not detected" in error_str:
+                        error_msg = f"❌ {i18n('生成失败')}: 视频中未检测到人脸，请确保视频中有清晰可见的正脸"
+                    else:
+                        error_msg = f"❌ {i18n('生成失败')}: {error_str}"
                     print(f"Video dubbing error: {e}")
                     traceback.print_exc()
                     return None, error_msg
