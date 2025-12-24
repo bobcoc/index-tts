@@ -792,9 +792,17 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                 子进程模式：TTS 和 LipSync 都在独立进程中运行，完成后显存完全释放。
                 """
                 import subprocess
+                import shutil
                 
                 try:
                     progress(0.1, desc=i18n("提取参考音频..."))
+                    
+                    # 复制原始视频到session目录，便于溯源
+                    video_ext = os.path.splitext(video_path)[1] or '.mp4'
+                    local_video_path = os.path.join(temp_dir, f"input_video{video_ext}")
+                    shutil.copy(video_path, local_video_path)
+                    print(f">> [DEBUG] 原始视频已复制到: {local_video_path}")
+                    video_path = local_video_path  # 后续使用本地副本
                     
                     # Step 1: Extract reference audio
                     if spk_audio is None:
@@ -857,11 +865,19 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                     from tools.video_dub import get_video_duration, extend_video_from_tail
                     video_duration = get_video_duration(video_path)
                     
+                    # 调试信息：显示音视频时长对比
+                    print(f">> [DEBUG] 音视频时长对比:")
+                    print(f"   - 视频时长: {video_duration:.3f}s")
+                    print(f"   - TTS音频时长: {tts_duration:.3f}s")
+                    print(f"   - 差异: {tts_duration - video_duration:.3f}s (正数=音频长于视频, 负数=音频短于视频)")
+                    print(f"   - align_duration={align_duration}, extend_video={cmd_args.extend_video}")
+                    
                     video_to_use = video_path
                     tts_audio = tts_audio_raw
                     
                     if tts_duration > video_duration and cmd_args.extend_video:
                         # 扩展视频而不是截断音频
+                        print(f">> [DEBUG] 选择扩展视频模式 (TTS音频较长且extend_video=True)")
                         extended_video = os.path.join(temp_dir, "extended_video.mp4")
                         video_to_use = extend_video_from_tail(
                             video_path, tts_duration, extended_video, 
@@ -870,12 +886,18 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                         print(f">> Extended video: {video_to_use}")
                     elif align_duration and abs(tts_duration - video_duration) > 0.1:
                         # 对齐音频时长到视频
+                        print(f">> [DEBUG] 选择对齐音频时长模式")
                         tts_audio = os.path.join(temp_dir, "tts_audio.wav")
                         align_audio_duration(
                             tts_audio_raw, video_duration, tts_audio,
                             no_speed_change=cmd_args.extend_video,
-                            verbose=cmd_args.verbose
+                            verbose=True  # 强制开启详细输出
                         )
+                        # 验证对齐后的音频时长
+                        aligned_duration = get_audio_duration(tts_audio)
+                        print(f">> [DEBUG] 对齐后音频时长: {aligned_duration:.3f}s")
+                    else:
+                        print(f">> [DEBUG] 无需对齐 (差异<0.1s 或 align_duration=False)")
                     
                     progress(0.6, desc=i18n("生成口型同步视频 (子进程)..."))
                     
@@ -900,6 +922,17 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                     if not cmd_args.verbose:
                         lipsync_cmd.append("--quiet")
                     
+                    # 调试信息：显示传递给lipsync_cli的参数
+                    print(f">> [DEBUG] LipSync命令参数:")
+                    print(f"   - video: {video_to_use}")
+                    print(f"   - audio: {tts_audio}")
+                    print(f"   - output: {output_path}")
+                    print(f"   - align_mode: none")
+                    
+                    # 检查传递给lipsync的音频时长
+                    final_audio_duration = get_audio_duration(tts_audio)
+                    print(f"   - 传递给lipsync的音频时长: {final_audio_duration:.3f}s")
+                    
                     print(f">> Running LipSync subprocess...")
                     lipsync_result = subprocess.run(lipsync_cmd, capture_output=not cmd_args.verbose, text=True)
                     
@@ -912,6 +945,12 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                     
                     if not os.path.exists(output_path):
                         raise RuntimeError("输出视频文件未生成")
+                    
+                    # 调试信息：检查最终输出视频的时长
+                    from tools.video_dub import get_video_duration as get_vid_dur
+                    output_video_duration = get_vid_dur(output_path)
+                    print(f">> [DEBUG] 最终输出视频时长: {output_video_duration:.3f}s")
+                    print(f">> [DEBUG] session目录: {temp_dir}")
                     
                     progress(1.0, desc=i18n("完成"))
                     
@@ -932,8 +971,17 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                 """
                 常规模式：TTS 在主进程运行，LipSync 在子进程运行。
                 """
+                import shutil
+                
                 try:
                     progress(0.1, desc=i18n("提取参考音频..."))
+                    
+                    # 复制原始视频到session目录，便于溯源
+                    video_ext = os.path.splitext(video_path)[1] or '.mp4'
+                    local_video_path = os.path.join(temp_dir, f"input_video{video_ext}")
+                    shutil.copy(video_path, local_video_path)
+                    print(f">> [DEBUG] 原始视频已复制到: {local_video_path}")
+                    video_path = local_video_path  # 后续使用本地副本
                     
                     # Step 1: Extract reference audio
                     if spk_audio is None:
@@ -970,13 +1018,26 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                         verbose=cmd_args.verbose
                     )
                     
+                    # 调试信息：显示音视频时长对比
+                    tts_duration = get_audio_duration(tts_audio_raw)
+                    print(f">> [DEBUG] 音视频时长对比:")
+                    print(f"   - 视频时长(原始音频): {orig_duration:.3f}s")
+                    print(f"   - TTS音频时长: {tts_duration:.3f}s")
+                    print(f"   - 差异: {tts_duration - orig_duration:.3f}s")
+                    print(f"   - align_duration={align_duration}")
+                    
                     # Optional: Align duration
                     if align_duration:
                         progress(0.5, desc=i18n("对齐音频时长..."))
+                        print(f">> [DEBUG] 选择对齐音频时长模式")
                         tts_audio = os.path.join(temp_dir, "tts_audio.wav")
                         align_audio_duration(tts_audio_raw, orig_duration, tts_audio, 
-                                           orig_audio_path=orig_audio_path, verbose=cmd_args.verbose)
+                                           orig_audio_path=orig_audio_path, verbose=True)
+                        # 验证对齐后的音频时长
+                        aligned_duration = get_audio_duration(tts_audio)
+                        print(f">> [DEBUG] 对齐后音频时长: {aligned_duration:.3f}s")
                     else:
+                        print(f">> [DEBUG] 未启用对齐")
                         tts_audio = tts_audio_raw
                     
                     progress(0.6, desc=i18n("生成口型同步视频..."))
@@ -1046,6 +1107,14 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                     
                     output_path = os.path.join(current_dir, "outputs", f"video_dub_{int(time.time())}.mp4")
                     
+                    # 调试信息：显示传递给lip_sync_engine的参数
+                    final_audio_duration = get_audio_duration(tts_audio)
+                    print(f">> [DEBUG] LipSync参数:")
+                    print(f"   - video: {video_path}")
+                    print(f"   - audio: {tts_audio}")
+                    print(f"   - output: {output_path}")
+                    print(f"   - 传递给lipsync的音频时长: {final_audio_duration:.3f}s")
+                    
                     try:
                         lip_sync_engine.generate(
                             video_path=video_path,
@@ -1092,6 +1161,12 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                         
                         if cmd_args.verbose:
                             print(f">> TTS models reloaded to GPU")
+                    
+                    # 调试信息：检查最终输出视频的时长
+                    from tools.video_dub import get_video_duration as get_vid_dur
+                    output_video_duration = get_vid_dur(output_path)
+                    print(f">> [DEBUG] 最终输出视频时长: {output_video_duration:.3f}s")
+                    print(f">> [DEBUG] session目录: {temp_dir}")
                     
                     progress(1.0, desc=i18n("完成"))
                     

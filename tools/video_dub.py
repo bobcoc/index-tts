@@ -661,18 +661,27 @@ def align_audio_duration(
     """
     current_duration = get_audio_duration(audio_path)
     
+    # 调试信息
+    print(f">> [DEBUG] align_audio_duration 调用:")
+    print(f"   - 当前音频时长: {current_duration:.3f}s")
+    print(f"   - 目标时长: {target_duration:.3f}s")
+    print(f"   - no_speed_change: {no_speed_change}")
+    
     if abs(current_duration - target_duration) < 0.1:
         # Duration already close enough, just copy
+        print(f"   - 结果: 时长差异<0.1s，直接复制")
         if audio_path != output_path:
             shutil.copy(audio_path, output_path)
         return output_path
     
     # Calculate ratio
     ratio = current_duration / target_duration
+    print(f"   - 时长比例: {ratio:.3f} (音频/目标)")
     
     # Case 1: TTS audio is shorter than target - pad with silence
     if current_duration < target_duration:
         silence_duration = target_duration - current_duration
+        print(f"   - 结果: 音频较短，填充静音 {silence_duration:.3f}s")
         if verbose:
             print(f">> TTS 音频较短 ({current_duration:.2f}s vs {target_duration:.2f}s)，填充静音")
         
@@ -694,6 +703,7 @@ def align_audio_duration(
         if no_speed_change or ratio > 1.5:
             # 不调整速度，直接截断音频
             # 注意：调用者可以选择扩展视频而不是截断音频
+            print(f"   - 结果: 音频较长，截断到{target_duration:.3f}s (no_speed_change={no_speed_change}, ratio={ratio:.3f})")
             if verbose:
                 print(f">> TTS 音频较长 ({current_duration:.2f}s vs {target_duration:.2f}s)，截断音频")
             
@@ -711,6 +721,7 @@ def align_audio_duration(
         else:
             # 小范围差异，使用 atempo 调整速度
             tempo = ratio
+            print(f"   - 结果: 音频较长，使用atempo={tempo:.3f}调整速度 (这将加快音频!)")
             if verbose:
                 print(f">> 对齐音频时长: {current_duration:.2f}s -> {target_duration:.2f}s (tempo={tempo:.2f})")
             

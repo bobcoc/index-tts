@@ -575,10 +575,12 @@ def main():
         )
     elif duration_diff > 0.1 and args.align_mode == "none":
         if video_duration < audio_duration:
-            print(f">> 警告: 视频 ({video_duration:.2f}s) 比音频 ({audio_duration:.2f}s) 短")
+            print(f">> [DEBUG] 视频 ({video_duration:.2f}s) 比音频 ({audio_duration:.2f}s) 短, align_mode=none 不进行对齐")
         else:
-            print(f">> 警告: 视频 ({video_duration:.2f}s) 比音频 ({audio_duration:.2f}s) 长")
-        print(">> 使用 --align_mode 参数可自动对齐 (speed/extend_tail/extend_head)")
+            print(f">> [DEBUG] 视频 ({video_duration:.2f}s) 比音频 ({audio_duration:.2f}s) 长, align_mode=none 不进行对齐")
+    else:
+        if verbose:
+            print(f">> [DEBUG] 时长差异小于0.1s，无需对齐")
     
     try:
         # 运行口型同步
