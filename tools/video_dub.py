@@ -540,6 +540,201 @@ def get_video_duration(video_path: str) -> float:
     return float(result.stdout.strip())
 
 
+def trim_video(
+    video_path: str,
+    duration: float,
+    output_path: str,
+    start_time: float = 0,
+    verbose: bool = True
+) -> str:
+    """
+    裁剪视频到指定时长。
+    
+    Args:
+        video_path: 原视频路径
+        duration: 目标时长（秒）
+        output_path: 输出视频路径
+        start_time: 起始时间（秒）
+        verbose: 是否打印详细信息
+    
+    Returns:
+        裁剪后的视频路径
+    """
+    if verbose:
+        print(f">> 裁剪视频: 从 {start_time:.2f}s 截取 {duration:.2f}s")
+    
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", video_path,
+        "-ss", str(start_time),
+        "-t", str(duration),
+        "-c:v", "libx264", "-c:a", "aac",
+        output_path
+    ]
+    subprocess.run(cmd, capture_output=True, check=True)
+    
+    if verbose:
+        actual_duration = get_video_duration(output_path)
+        print(f"   裁剪后视频时长: {actual_duration:.2f}s")
+    
+    return output_path
+
+
+def extract_video_segment(
+    video_path: str,
+    start_time: float,
+    output_path: str,
+    duration: float = None,
+    verbose: bool = True
+) -> str:
+    """
+    从视频中截取一段（保留原始音频）。
+    
+    Args:
+        video_path: 原视频路径
+        start_time: 起始时间（秒）
+        output_path: 输出视频路径
+        duration: 截取时长（秒），None表示截取到结尾
+        verbose: 是否打印详细信息
+    
+    Returns:
+        截取后的视频路径
+    """
+    if verbose:
+        if duration:
+            print(f">> 截取视频片段: 从 {start_time:.2f}s 截取 {duration:.2f}s")
+        else:
+            print(f">> 截取视频片段: 从 {start_time:.2f}s 到结尾")
+    
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", video_path,
+        "-ss", str(start_time),
+    ]
+    if duration:
+        cmd.extend(["-t", str(duration)])
+    cmd.extend(["-c:v", "libx264", "-c:a", "aac", output_path])
+    
+    subprocess.run(cmd, capture_output=True, check=True)
+    
+    if verbose:
+        actual_duration = get_video_duration(output_path)
+        print(f"   截取后视频时长: {actual_duration:.2f}s")
+    
+    return output_path
+
+
+def concat_videos(
+    video1_path: str,
+    video2_path: str,
+    output_path: str,
+    verbose: bool = True
+) -> str:
+    """
+    拼接两个视频。
+    
+    Args:
+        video1_path: 第一个视频路径
+        video2_path: 第二个视频路径
+        output_path: 输出视频路径
+        verbose: 是否打印详细信息
+    
+    Returns:
+        拼接后的视频路径
+    """
+    if verbose:
+        dur1 = get_video_duration(video1_path)
+        dur2 = get_video_duration(video2_path)
+        print(f">> 拼接视频: {dur1:.2f}s + {dur2:.2f}s")
+    
+    temp_dir = os.path.dirname(output_path) or "."
+    concat_list = os.path.join(temp_dir, "_concat_list.txt")
+    
+    try:
+        with open(concat_list, "w") as f:
+            f.write(f"file '{os.path.abspath(video1_path)}'\n")
+            f.write(f"file '{os.path.abspath(video2_path)}'\n")
+        
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", concat_list,
+            "-c:v", "libx264", "-c:a", "aac",
+            output_path
+        ]
+        subprocess.run(cmd, capture_output=True, check=True)
+        
+        if verbose:
+            final_duration = get_video_duration(output_path)
+            print(f"   拼接后视频时长: {final_duration:.2f}s")
+        
+        return output_path
+        
+    finally:
+        if os.path.exists(concat_list):
+            os.remove(concat_list)
+
+
+def speed_up_video(
+    video_path: str,
+    target_duration: float,
+    output_path: str,
+    verbose: bool = True
+) -> str:
+    """
+    加速视频以匹配目标时长（不调整音频，用于口型同步前的预处理）。
+    
+    通过抽帧的方式加快视频，保留完整内容。
+    
+    Args:
+        video_path: 原视频路径
+        target_duration: 目标时长（秒）
+        output_path: 输出视频路径
+        verbose: 是否打印详细信息
+    
+    Returns:
+        加速后的视频路径
+    """
+    video_duration = get_video_duration(video_path)
+    
+    if video_duration <= target_duration:
+        # 视频已经足够短，无需加速
+        if video_path != output_path:
+            shutil.copy(video_path, output_path)
+        return output_path
+    
+    # 计算加速倍率
+    speed_factor = video_duration / target_duration
+    
+    if verbose:
+        print(f">> [DEBUG] 视频加速:")
+        print(f"   - 原视频时长: {video_duration:.3f}s")
+        print(f"   - 目标时长: {target_duration:.3f}s")
+        print(f"   - 加速倍率: {speed_factor:.3f}x")
+    
+    # 使用 setpts 滤镜加速视频（不处理音频）
+    # setpts=PTS/speed 会加快视频
+    # 不处理音频（-an），因为后续会用TTS音频替换
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", video_path,
+        "-filter:v", f"setpts=PTS/{speed_factor}",
+        "-an",  # 不包含音频，后续会用TTS音频
+        "-c:v", "libx264",
+        output_path
+    ]
+    
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"视频加速失败: {result.stderr}")
+    
+    if verbose:
+        actual_duration = get_video_duration(output_path)
+        print(f"   - 加速后视频时长: {actual_duration:.3f}s")
+    
+    return output_path
+
+
 def extend_video_from_tail(
     video_path: str,
     target_duration: float,
