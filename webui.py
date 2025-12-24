@@ -890,6 +890,7 @@ with gr.Blocks(title="IndexTTS Demo") as demo:
                         "--output", output_path,
                         "--engine", "latentsync",
                         "--latentsync_dir", cmd_args.latentsync_dir,
+                        "--align_mode", "none",  # 禁止lipsync_cli调整音频速度，音频对齐已在上游处理
                     ]
                     
                     if cmd_args.latentsync_python:
